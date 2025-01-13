@@ -18,7 +18,7 @@ def getMessage():
 def webhook():
    bot.remove_webhook()
    # TO DO: Edit the value of variable public_domain according to the PythonAnywhere/Gitpod public domain
-   public_domain = "https://tedirivan2.pythonanywhere.com"
+   public_domain = "tedirivan2.pythonanywhere.com"
 
    # NOTE: You need to use a publically available URL that the Telegram servers can reach.
    bot.set_webhook(url=f'{public_domain}/{TOKEN}')

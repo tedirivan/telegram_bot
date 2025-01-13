@@ -1,0 +1,194 @@
+# SETUP: VIRTUAL ENVIRONMENT
+## for environment variables
+from dotenv import load_dotenv
+import os
+
+## for chatbot functionalities
+import telebot
+from string import Template
+import emoji
+from gtts import gTTS
+
+## for data analysis
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')
+
+# SETUP: TELEGRAM BOT API TOKEN
+load_dotenv()
+TOKEN = os.environ.get("TOKEN")
+bot = telebot.TeleBot(TOKEN, threaded=False)
+
+# -------------------- CHECKPOINT 1 --------------------
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    chat_id = message.chat.id
+
+    first_name = message.from_user.first_name
+    last_name = message.from_user.last_name
+    full_name = f'{first_name} {last_name}' if last_name is not None else first_name
+
+    with open('template_text/welcome.txt', mode='r', encoding='utf-8') as f:
+        content = f.read()
+        temp = Template(content)
+        welcome = temp.substitute(FULL_NAME=full_name)
+
+    bot.send_message(
+        chat_id,
+        welcome,
+        parse_mode='Markdown'
+    )
+
+
+@bot.message_handler(commands=['about'])
+def send_about(message):
+    chat_id = message.chat.id
+
+    with open('template_text/about.txt', mode='r', encoding='utf-8') as f:
+        content = f.read()
+        temp = Template(content)
+        about = temp.substitute(
+            STUDENT_NAME="Tedi Rivan",
+            BATCH_ACADEMY="DA-Apollo",
+            GITHUB_REPO_LINK="https://github.com/tedirivan/telebot"
+        )
+
+    bot.send_message(
+        chat_id,
+        about,
+        parse_mode='Markdown'
+    )
+
+# -------------------- CHECKPOINT 2 --------------------
+df = pd.read_csv('data_input/facebook_ads_v2.csv', parse_dates=['reporting_date'], dayfirst=True)
+
+df['campaign_id'] = df['campaign_id'].astype('str')
+unique_campaign = df['campaign_id'].astype('str').unique()
+
+df['ad_id'] = df['ad_id'].astype('str')
+df['age'] = df['age'].astype('category')
+df['gender'] = df['gender'].astype('category')
+
+@bot.message_handler(commands=['summary'])
+def ask_id_summary(message):
+    chat_id = message.chat.id
+    markup = telebot.types.ReplyKeyboardMarkup(one_time_keyboard=True)
+    for i in unique_campaign:
+        markup.add(i)
+    sent = bot.send_message(chat_id, 'Choose campaign to be summarized:', reply_markup=markup)
+    bot.register_next_step_handler(sent, send_summary)
+
+def send_summary(message):
+    chat_id = message.chat.id
+    selected_campaign_id = message.text
+
+    if selected_campaign_id in unique_campaign:
+        df_campaign = df[df['campaign_id'] == selected_campaign_id]
+
+        start_date = df_campaign['reporting_date'].min().strftime(format="%d %b %y")
+        end_date = df_campaign['reporting_date'].max().strftime(format="%d %b %y")
+
+        total_spent = df_campaign['spent'].sum().astype(int)
+        total_conversion = df_campaign['total_conversion'].sum().astype(int)
+        cpc = total_spent / total_conversion
+
+        with open('template_text/summary.txt', mode='r', encoding='utf-8') as f:
+            content = f.read()
+            temp = Template(content)
+            summary = temp.substitute(
+                CAMPAIGN_ID=selected_campaign_id,
+                START_DATE=start_date,
+                END_DATE=end_date,
+                TOTAL_SPENT=f"${total_spent:,.0f}",
+                TOTAL_CONVERSION=f"${total_conversion:,}",
+                CPC=f"${cpc:.1f}"
+            )
+
+        bot.send_message(chat_id, summary)
+    else:
+        bot.send_message(chat_id, 'Campaign ID not found. Please try again!')
+        ask_id_summary(message)
+
+# -------------------- CHECKPOINT 3 --------------------
+@bot.message_handler(commands=['plot'])
+def ask_id_report(message):
+    chat_id = message.chat.id
+    markup = telebot.types.ReplyKeyboardMarkup(one_time_keyboard=True)
+    for i in unique_campaign:
+        markup.add(i)
+    sent = bot.send_message(chat_id, 'Choose campaign to generate a report:', reply_markup=markup)
+    bot.register_next_step_handler(sent, generate_report)
+
+def generate_report(message):
+    chat_id = message.chat.id
+    selected_campaign_id = message.text
+
+    if selected_campaign_id in unique_campaign:
+        df_campaign = df[df['campaign_id'] == selected_campaign_id]
+        df_plot = df_campaign.groupby('age').agg({'spent': 'sum', 'approved_conversion': 'sum'})
+        df_plot['cpc'] = df_plot['spent'] / df_plot['approved_conversion']
+
+        # Prepare visualization
+        fig, axes = plt.subplots(3, sharex=True, dpi=300)
+
+        for ax in axes:
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_visible(False)
+            ax.spines['bottom'].set_visible(False)
+
+        axes[0].bar(x=df_plot.index, height=df_plot['spent'], color='#AE2024')
+        axes[0].set_ylabel('Total Spent:', fontsize=8)
+
+        axes[1].bar(x=df_plot.index, height=df_plot['approved_conversion'], color='#000000')
+        axes[1].set_ylabel('Total Approved Conversion:', fontsize=8)
+
+        axes[2].bar(x=df_plot.index, height=df_plot['cpc'], color='#AE2024')
+        axes[2].set_ylabel('Average CPC:', fontsize=8)
+
+        plt.xlabel('Age Group')
+        axes[0].set_title(
+            f"Average CPC, Total Spent, and Total Approved Conversion\n"
+            f"across Age Group for Campaign ID: {selected_campaign_id}")
+
+        if not os.path.exists('output'):
+            os.makedirs('output')
+
+        plt.savefig('output/report.png', bbox_inches='tight')
+
+        bot.send_chat_action(chat_id, 'upload_photo')
+        with open('output/report.png', 'rb') as img:
+            bot.send_photo(chat_id, img)
+
+        plot_info = list(zip(
+            ['spent', 'approved_conversion', 'cpc'],
+            [df_plot['spent'].idxmax(), df_plot['approved_conversion'].idxmax(), df_plot['cpc'].idxmax()],
+            [df_plot['spent'].idxmin(), df_plot['approved_conversion'].idxmin(), df_plot['cpc'].idxmin()]
+        ))
+
+        plot_text = f"This is your requested report for Campaign ID {selected_campaign_id}.\n"
+        for col, maxi, mini in plot_info:
+            text = f"Age group with the highest {col} is {maxi}, while the lowest is {mini}.\n"
+            plot_text += text
+
+        speech = gTTS(text=plot_text)
+        speech.save('output/report_info.ogg')
+
+        with open('output/report_info.ogg', 'rb') as f:
+            bot.send_voice(chat_id, f)
+    else:
+        bot.send_message(chat_id, 'Campaign ID not found. Please try again!')
+        ask_id_report(message)
+
+# -------------------- CHECKPOINT 4 --------------------
+@bot.message_handler(func=lambda message: True)
+def echo_all(message):
+    with open('template_text/default.txt', mode='r', encoding='utf-8') as f:
+        temp = Template(f.read())
+        default = temp.substitute({'EMOJI': emoji.emojize(':confused_face:')})
+
+    bot.reply_to(message, default)
+
+if __name__ == "__main__":
+    bot.polling()
